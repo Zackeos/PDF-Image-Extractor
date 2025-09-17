@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Image Extractor to ZIP</title>
+    <link rel="icon" type="image/png" href="https://img.icons8.com/doodle/48/pdf--v3.png">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 15px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+
+        h1 {
+            text-align: center;
+            color: #0056b3;
+        }
+
+        #drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            background-color: #fff;
+            margin-bottom: 20px;
+        }
+
+        #drop-zone.dragover {
+            border-color: #007bff;
+            background-color: #e9f5ff;
+        }
+
+        #status {
+            text-align: center;
+            font-size: 1.1em;
+            font-weight: bold;
+            min-height: 25px;
+        }
+
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 25px;
+            height: 25px;
+            animation: spin 2s linear infinite;
+            margin: 10px auto;
+            display: none;
+        }
+
+        #download-btn {
+            display: none;
+            /* Hidden by default */
+            margin: 20px auto;
+            padding: 12px 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+</head>
+
+<body>
+
+    <h1>PDF Image Extractor</h1>
+    <p style="text-align: center;">Upload one or more PDF files to extract all embedded images into a single ZIP file.
+    </p>
+
+    <div id="drop-zone">
+        <p>Drag & drop PDF file(s) here, or click to select files.</p>
+        <input type="file" id="pdf-files" accept=".pdf" hidden multiple>
+    </div>
+
+    <div id="status"></div>
+    <div id="loader" class="loader"></div>
+    <button id="download-btn">Download ZIP File</button>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js`;
+
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('pdf-files');
+        const statusDiv = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        const downloadBtn = document.getElementById('download-btn');
+
+        let generatedZipBlob = null; // Variable to hold the generated ZIP file
+
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            if (generatedZipBlob) {
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(generatedZipBlob);
+                link.download = 'extracted-images.zip';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        });
+
+        async function handleFiles(files) {
+            if (files.length === 0) return;
+
+            // Reset state from previous runs
+            generatedZipBlob = null;
+            downloadBtn.style.display = 'none';
+            statusDiv.textContent = 'Initialising...';
+            loader.style.display = 'block';
+
+            const zip = new JSZip();
+            const processingPromises = [];
+
+            for (const file of files) {
+                if (file.type !== 'application/pdf') continue;
+
+                processingPromises.push(processPdfFile(file, zip));
+            }
+
+            await Promise.all(processingPromises);
+
+            if (Object.keys(zip.files).length > 0) {
+                statusDiv.textContent = 'Generating ZIP file...';
+                generatedZipBlob = await zip.generateAsync({ type: "blob" }); // Store blob in the variable
+
+                statusDiv.textContent = `Extraction complete! Click the button below to download.`;
+                downloadBtn.style.display = 'block'; // Show the download button
+            } else {
+                statusDiv.textContent = 'No images were found in the selected PDF(s).';
+            }
+
+            loader.style.display = 'none';
+        }
+
+        async function processPdfFile(file, zip) {
+            const pdfFileName = file.name.replace(/\.pdf$/i, '');
+            const pdfFolder = zip.folder(pdfFileName);
+
+            statusDiv.textContent = `Processing "${file.name}"...`;
+
+            const fileReader = new FileReader();
+            const fileBuffer = await new Promise(resolve => {
+                fileReader.onload = (e) => resolve(e.target.result);
+                fileReader.readAsArrayBuffer(file);
+            });
+
+            const typedarray = new Uint8Array(fileBuffer);
+            const pdf = await pdfjsLib.getDocument(typedarray).promise;
+            let imageCount = 0;
+
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const ops = await page.getOperatorList();
+
+                for (let j = 0; j < ops.fnArray.length; j++) {
+                    if (ops.fnArray[j] !== pdfjsLib.OPS.paintImageXObject) {
+                        continue; // Skip any operator that isn't for painting an image
+                    }
+
+                    const imageName = ops.argsArray[j][0];
+
+                    try {
+                        // --- FIX START ---
+                        // Create two promises: one to get the image, and one that acts as a timeout.
+                        const imagePromise = new Promise(resolve => {
+                            page.objs.get(imageName, resolve);
+                        });
+
+                        const timeoutPromise = new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Timeout')), 1000); // 1-second timeout
+                        });
+
+                        // Wait for whichever promise finishes first.
+                        const img = await Promise.race([imagePromise, timeoutPromise]);
+                        // --- FIX END ---
+
+
+                        if (!img || !img.data) {
+                            console.warn(`Skipping non-image object: ${imageName}`);
+                            continue;
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        const imgData = ctx.createImageData(img.width, img.height);
+
+                        const data = img.data;
+                        if (data.length === img.width * img.height * 3) { // RGB
+                            let k = 0, l = 0;
+                            while (k < data.length) {
+                                imgData.data[l++] = data[k++];
+                                imgData.data[l++] = data[k++];
+                                imgData.data[l++] = data[k++];
+                                imgData.data[l++] = 255;
+                            }
+                        } else if (data.length === img.width * img.height) { // Grayscale
+                            let k = 0, l = 0;
+                            while (k < data.length) {
+                                imgData.data[l++] = data[k];
+                                imgData.data[l++] = data[k];
+                                imgData.data[l++] = data[k];
+                                imgData.data[l++] = 255;
+                                k++;
+                            }
+                        } else { // Fallback for other formats (like RGBA)
+                            imgData.data.set(data);
+                        }
+
+                        ctx.putImageData(imgData, 0, 0);
+
+                        const imageBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                        pdfFolder.file(`page${i}_img${++imageCount}.png`, imageBlob);
+
+                    } catch (e) {
+                        // This will catch timeouts or any other errors during image processing.
+                        console.warn(`Could not process object "${imageName}" due to error:`, e.message);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+
+</html>
