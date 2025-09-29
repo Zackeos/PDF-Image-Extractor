@@ -22,6 +22,25 @@
             color: #0056b3;
         }
 
+        #options-box {
+            text-align: center;
+            margin-bottom: 20px;
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        #options-box label {
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        #options-box p {
+            font-size: 0.9em;
+            margin: 5px 0 0 0;
+            color: #555;
+        }
+
         #drop-zone {
             border: 2px dashed #ccc;
             border-radius: 8px;
@@ -89,6 +108,15 @@
     <p style="text-align: center;">Upload one or more PDF files to extract all embedded images into a single ZIP file.
     </p>
 
+    <div id="options-box">
+        <input type="checkbox" id="single-folder-option" name="single-folder-option">
+        <label for="single-folder-option">Single Folder Mode</label>
+        <p>
+            Assumes each PDF has one image. Extracts the first image from each PDF into the ZIP root, naming it after
+            the PDF file (e.g., "report.pdf" → "report.png").
+        </p>
+    </div>
+
     <div id="drop-zone">
         <p>Drag & drop PDF file(s) here, or click to select files.</p>
         <input type="file" id="pdf-files" accept=".pdf" hidden multiple>
@@ -106,6 +134,7 @@
         const statusDiv = document.getElementById('status');
         const loader = document.getElementById('loader');
         const downloadBtn = document.getElementById('download-btn');
+        const singleFolderCheckbox = document.getElementById('single-folder-option');
 
         let generatedZipBlob = null; // Variable to hold the generated ZIP file
 
@@ -145,18 +174,21 @@
 
             const zip = new JSZip();
             const processingPromises = [];
+            const singleFolderMode = singleFolderCheckbox.checked;
 
             for (const file of files) {
                 if (file.type !== 'application/pdf') continue;
 
-                processingPromises.push(processPdfFile(file, zip));
+                processingPromises.push(processPdfFile(file, zip, singleFolderMode));
             }
 
             await Promise.all(processingPromises);
 
             if (Object.keys(zip.files).length > 0) {
                 statusDiv.textContent = 'Generating ZIP file...';
-                generatedZipBlob = await zip.generateAsync({ type: "blob" }); // Store blob in the variable
+                generatedZipBlob = await zip.generateAsync({
+                    type: "blob"
+                }); // Store blob in the variable
 
                 statusDiv.textContent = `Extraction complete! Click the button below to download.`;
                 downloadBtn.style.display = 'block'; // Show the download button
@@ -167,9 +199,14 @@
             loader.style.display = 'none';
         }
 
-        async function processPdfFile(file, zip) {
+        async function processPdfFile(file, zip, singleFolderMode) {
             const pdfFileName = file.name.replace(/\.pdf$/i, '');
-            const pdfFolder = zip.folder(pdfFileName);
+            let pdfFolder;
+
+            // Only create a folder if not in single folder mode
+            if (!singleFolderMode) {
+                pdfFolder = zip.folder(pdfFileName);
+            }
 
             statusDiv.textContent = `Processing "${file.name}"...`;
 
@@ -189,26 +226,15 @@
 
                 for (let j = 0; j < ops.fnArray.length; j++) {
                     if (ops.fnArray[j] !== pdfjsLib.OPS.paintImageXObject) {
-                        continue; // Skip any operator that isn't for painting an image
+                        continue;
                     }
 
                     const imageName = ops.argsArray[j][0];
 
                     try {
-                        // --- FIX START ---
-                        // Create two promises: one to get the image, and one that acts as a timeout.
-                        const imagePromise = new Promise(resolve => {
-                            page.objs.get(imageName, resolve);
-                        });
-
-                        const timeoutPromise = new Promise((_, reject) => {
-                            setTimeout(() => reject(new Error('Timeout')), 1000); // 1-second timeout
-                        });
-
-                        // Wait for whichever promise finishes first.
+                        const imagePromise = new Promise(resolve => page.objs.get(imageName, resolve));
+                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1000));
                         const img = await Promise.race([imagePromise, timeoutPromise]);
-                        // --- FIX END ---
-
 
                         if (!img || !img.data) {
                             console.warn(`Skipping non-image object: ${imageName}`);
@@ -233,11 +259,11 @@
                         } else if (data.length === img.width * img.height) { // Grayscale
                             let k = 0, l = 0;
                             while (k < data.length) {
-                                imgData.data[l++] = data[k];
-                                imgData.data[l++] = data[k];
-                                imgData.data[l++] = data[k];
+                                const val = data[k++];
+                                imgData.data[l++] = val;
+                                imgData.data[l++] = val;
+                                imgData.data[l++] = val;
                                 imgData.data[l++] = 255;
-                                k++;
                             }
                         } else { // Fallback for other formats (like RGBA)
                             imgData.data.set(data);
@@ -246,11 +272,18 @@
                         ctx.putImageData(imgData, 0, 0);
 
                         const imageBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-                        pdfFolder.file(`page${i}_img${++imageCount}.png`, imageBlob);
+
+                        if (singleFolderMode) {
+                            // Save to the root with the PDF's name and stop processing this file
+                            zip.file(`${pdfFileName}.png`, imageBlob);
+                            return; // Exit the function immediately after finding the first image
+                        } else {
+                            // Original behaviour: save to a dedicated folder with a generic name
+                            pdfFolder.file(`page${i}_img${++imageCount}.png`, imageBlob);
+                        }
 
                     } catch (e) {
-                        // This will catch timeouts or any other errors during image processing.
-                        console.warn(`Could not process object "${imageName}" due to error:`, e.message);
+                        console.warn(`Could not process object "${imageName}" from "${file.name}" due to error:`, e.message);
                     }
                 }
             }
